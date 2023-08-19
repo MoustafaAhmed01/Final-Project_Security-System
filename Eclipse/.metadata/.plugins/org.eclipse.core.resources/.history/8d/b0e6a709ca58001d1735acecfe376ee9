@@ -1,0 +1,220 @@
+/******************************************************************************
+ *
+ * Module: Common - Platform Types Abstraction
+ *
+ * File Name: Control_ECU.c
+ *
+ * Description: types for AVR
+ *
+ * Date Created: 28/10/2022
+ *
+ * Author: Moustafa Ahmed
+ *
+ *******************************************************************************/
+
+/**-------------------------INCLUDES Section------------------------**/
+#include "Libraries.h"
+#include "GPIO.h"
+#include "buzzer.h"
+#include "DcMotor.h"
+#include "TIMER.h"
+#include "uart.h"
+#include "twi.h"
+#include "external_eeprom.h"
+#include "LCD.h"
+
+
+/**-------------------------Macros----------------------------------**/
+#define CONTROL_READY 0x10
+/**-------------------------Enum Section----------------------------**/
+typedef enum
+{
+	NEW_PASS,SECOND_STAGE,THIRD_STAGE
+}System_Stage;
+/**-------------------------Struct Section--------------------------**/
+typedef struct
+{
+	uint8 Password1[6];
+	uint8 Password2[6];
+}System_Info;
+
+/* Creating Global Member from the structure */
+System_Stage g_SystemStep = NEW_PASS;
+/**-------------------------Function Dec. Section-------------------**/
+uint8 NewPasswordChecker(System_Info *a_EnteredPasswords);
+
+/**-------------------------Function Definition Section-------------**/
+/*
+ * Description:
+ * Initializing All drivers
+ */
+void Drivers_Init()
+{
+
+	/* Initializing UART */
+	/*
+	 * UART_trSpeed : Double Speed
+	 * UART_RECEIVE_INT : No
+	 * UART_TRANSMIT_INT : No
+	 * UART_EMPTY_INT : No
+	 * UART_RECEIVER : Yes
+	 * UART_TRANSMITTER : Yes
+	 * UART_CharSize : 8-bit
+	 * UART_REG_SELECT : UBRRH
+	 * UART_MODE_SELECT : A-sync
+	 * UART_PARITY_SELECT : No
+	 * UART_STOP_BIT_SELECT : 1-bit
+	 * UART_CLOCK_POLARITY : A-sync Rising
+	 * baud_rate : 9600
+	 *
+	 */
+	UART_ConfigType UART_Config = {DOUBLE_TR_SPEED,RECEIVE_INT_EN_OFF,TRANSMIT_INT_EN_OFF,EMPTY_INT_EN_OFF,RECEIVER_EN_ON,TRANSMITTER_EN_ON,EIGHT_BIT,UBRRH_REG,ASYNCHRONOUS,PARITY_DISABLE,ONE_BIT,A_Sync_RISING_EDGE,9600};
+	UART_init(&UART_Config);
+
+	/* Initializing Dc Motor */
+	DCMotor_init();
+
+	/* Initializing Timer0 PWM function for DcMotor Usage */
+	/*
+	 * file name: TIMER.h
+	 *  -> Structure Configuration:
+	 *
+	 *  Timer0_PreScaler : F_CPU/64
+	 *  Timer0_ForceCompare :--
+	 *  Timer0_WaveForm :--
+	 *  Timer0_CompareMode :--
+	 *  Timer0_COMP_INT :--
+	 *  Timer0_OVF_INT :--
+	 *  Timer0_TCNT0_Value :--
+	 *  Timer0_OCR0_Value :--
+	 */
+
+	//Timer0_ConfigType PWM_Config;
+	//PWM_Config.Timer0_PreScaler = F0_TIMER64;
+	//Timer0_PWM_Init(&PWM_Config);
+
+	/* Initializing the Buzzer */
+	//	Buzzer_init();
+
+	/* Initializing TWI */
+	/*
+	 * file name: twi.h
+	 *  -> Structure Configuration:
+	 *
+	 *  interruptControl : No
+	 *  ackControl : Activate
+	 *  twiControl : Activate
+	 *  prescalerControl : No Prescaling
+	 *  callRecControl :No
+	 *  address : Address 1
+	 *  bit_rate : 400 kbps
+	 */
+	TWI_ConfigType TWI_Config = {TWI_INT_DISABLED,ACK_OFF,TWI_ENABLED,F_I2C_1,CALL_RECOGNITION_OFF,1,2};
+
+	/* Initializing LCD */
+	LCD_init();
+
+}
+/*-------------------------------------------------------------------*/
+
+int main(void)
+{
+	/**-----------------------Local Variables----------------------**/
+	System_Info SystemInfo;
+	uint8 a_PassCheckResult = 0;
+	uint8 a_CharCounter=0;
+	/**-----------------------Main Section-------------------------**/
+
+	/* Initializing Everything */
+	Drivers_Init();
+
+	while(1)
+	{
+		if(g_SystemStep == NEW_PASS) /* First stage adding the password */
+		{
+
+			/* Receiving the 2 passwords from HMI_ECU */
+			/* Sync between two MCU */
+			UART_sendByte(CONTROL_READY);
+			/* Starting to receive the data */
+			UART_receiveString(SystemInfo.Password1);
+			/* Sync between two MCU */
+			UART_sendByte(CONTROL_READY);
+			/* Starting to receive the data */
+			UART_receiveString(SystemInfo.Password2);
+
+			/* Checking on the two passwords */
+			a_PassCheckResult = NewPasswordChecker(&SystemInfo);
+
+			/*TESTINGGGGGGGGGGGGGGGGGGGGGGGGG*/
+			LCD_clearScreen();
+			LCD_displayCharacter(a_PassCheckResult);
+
+			/* Return back the result to HMI_ECU to move to the next step */
+			while(UART_receiveByte() != CONTROL_READY){}
+			UART_sendByte(a_PassCheckResult);
+
+			if(a_PassCheckResult == '0')
+			{
+				/* Then do nothing as the two passwords are wrong 'stay' */
+				g_SystemStep = NEW_PASS;
+			}
+			else if(a_PassCheckResult == '1')
+			{
+				/* Then the two passwords are correct and then save the data */
+				a_CharCounter = 0;
+				while(a_CharCounter < 5)
+				{
+					EEPROM_writeByte(0x0310 + a_CharCounter,SystemInfo.Password1[a_CharCounter] );
+					_delay_ms(10);
+				} /* Password saved */
+
+				/* Move to the next stage */
+				g_SystemStep = SECOND_STAGE;
+
+			}
+
+		}
+		else if(g_SystemStep == SECOND_STAGE)
+		{
+
+		}
+	}
+}
+/*-------------------------------------------------------------------*/
+uint8 NewPasswordChecker(System_Info *a_EnteredPasswords)
+{
+	/**-----------------------Local Variables----------------------**/
+	uint8 CharCounter = 0;
+
+	while(a_EnteredPasswords->Password1[CharCounter] != '\0' || a_EnteredPasswords->Password2[CharCounter] != '\0') /* Getting check */
+	{
+		LCD_clearScreen();
+		LCD_intgerToString(a_EnteredPasswords->Password1[CharCounter]);
+		LCD_intgerToString(a_EnteredPasswords->Password2[CharCounter]);
+		_delay_ms(500);
+		if(a_EnteredPasswords->Password1[CharCounter] == a_EnteredPasswords->Password2[CharCounter])
+		{
+			CharCounter++;
+		}
+		else
+		{
+			/* Return a false reference as the two passwords doesn't match */
+			return '0';
+		}
+	}
+
+	/* Return a true reference that the two passwords are matched */
+	return '1';
+	/* To send a correct Pass check */
+	if(a_EnteredPasswords->Password1[CharCounter] == '\0')
+	{
+		while(UART_receiveByte() != CONTROL_READY){}
+		UART_sendByte('1');
+
+		/* Save the value in EEPROM */
+
+
+	}
+}
+/**---------------------------------END-----------------------------**/

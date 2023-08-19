@@ -1,0 +1,205 @@
+/******************************************************************************
+ *
+ * Module: Common - Platform Types Abstraction
+ *
+ * File Name: keypad.c
+ *
+ * Description: types for AVR
+ *
+ * Date Created: 15/10/2022
+ *
+ * Author: Moustafa Ahmed
+ *
+ *******************************************************************************/
+
+/**-------------------------INCLUDES Section------------------------**/
+#include "Libraries.h"
+#include "GPIO.h"
+#include "Keypad.h"
+
+/**-------------------------Extern Section--------------------------**/
+
+/**-------------------------Global Variables Section----------------**/
+
+/* Private functions prototypes: */
+
+#if(NUM_COL == 3)
+static uint8 Keypad_4x3_adjustSwitchNumber(uint8);
+#elif(NUM_COL == 4)
+static uint8 Keypad_4x4_adjustSwitchNumber(uint8);
+#endif
+
+/**-------------------------Function Definition Section-------------**/
+
+/* Public functions definitions: */
+uint8 Keypad_getPressedKey()
+{
+	uint8 row,col;
+
+	/*------------** Setting All pins as input pins **---------------------*/
+	/* Setting Col directions */
+	GPIO_setupPinDirection(KEYPAD_COL_PORT_ID, KEYPAD_FIRST_COL_PIN_ID,   PIN_INPUT);
+	GPIO_setupPinDirection(KEYPAD_COL_PORT_ID, KEYPAD_FIRST_COL_PIN_ID+1, PIN_INPUT);
+	GPIO_setupPinDirection(KEYPAD_COL_PORT_ID, KEYPAD_FIRST_COL_PIN_ID+2, PIN_INPUT);
+
+#if(KEYPAD_NUM_COLS == 4) /* If it's 4x4 keypad then add the last Col */
+	GPIO_setupPinDirection(KEYPAD_COL_PORT_ID, KEYPAD_FIRST_COL_PIN_ID+3, PIN_INPUT);
+#endif
+
+	/* Setting Row direction */
+	GPIO_setupPinDirection(KEYPAD_ROW_PORT_ID, KEYPAD_FIRST_ROW_PIN_ID,   PIN_INPUT);
+	GPIO_setupPinDirection(KEYPAD_ROW_PORT_ID, KEYPAD_FIRST_ROW_PIN_ID+1, PIN_INPUT);
+	GPIO_setupPinDirection(KEYPAD_ROW_PORT_ID, KEYPAD_FIRST_ROW_PIN_ID+2, PIN_INPUT);
+	GPIO_setupPinDirection(KEYPAD_ROW_PORT_ID, KEYPAD_FIRST_ROW_PIN_ID+3, PIN_INPUT);
+
+	/*--------------------------------------------------------*/
+
+	/*-----------*Using Internal pull method then let all pins be logic high*--*/
+	GPIO_writePin(KEYPAD_ROW_PORT_ID, KEYPAD_FIRST_ROW_PIN_ID, 	 LOGIC_HIGH);
+	GPIO_writePin(KEYPAD_ROW_PORT_ID, KEYPAD_FIRST_ROW_PIN_ID+1, LOGIC_HIGH);
+	GPIO_writePin(KEYPAD_ROW_PORT_ID, KEYPAD_FIRST_ROW_PIN_ID+2, LOGIC_HIGH);
+	GPIO_writePin(KEYPAD_ROW_PORT_ID, KEYPAD_FIRST_ROW_PIN_ID+3, LOGIC_HIGH);
+
+	GPIO_writePin(KEYPAD_COL_PORT_ID, KEYPAD_FIRST_COL_PIN_ID,   LOGIC_HIGH);
+	GPIO_writePin(KEYPAD_COL_PORT_ID, KEYPAD_FIRST_COL_PIN_ID+1, LOGIC_HIGH);
+	GPIO_writePin(KEYPAD_COL_PORT_ID, KEYPAD_FIRST_COL_PIN_ID+2, LOGIC_HIGH);
+#if(KEYPAD_NUM_COLS == 4) /* If it's 4x4 keypad then add the last Col */
+	GPIO_writePin(KEYPAD_COL_PORT_ID, KEYPAD_FIRST_COL_PIN_ID+3, LOGIC_HIGH);
+#endif
+	/*--------------------------------------------------------*/
+
+	while(1)
+	{
+
+		for(col = 0; col < KEYPAD_NUM_COLS; col++ )
+		{
+			/* one col is output and the rest are inputs */
+			GPIO_setupPinDirection(KEYPAD_COL_PORT_ID, KEYPAD_FIRST_COL_PIN_ID+col, PIN_OUTPUT);
+
+			/* Make this col only LOGIC low */
+			GPIO_writePin(KEYPAD_COL_PORT_ID, KEYPAD_FIRST_COL_PIN_ID+col, LOGIC_LOW);
+
+			for(row = 0; row < KEYPAD_NUM_ROWS; row++)
+			{
+
+				if(!GPIO_readPin(KEYPAD_ROW_PORT_ID, row))
+				{
+
+#if(KEYPAD_NUM_COLS == 3)
+					return Keypad_4x3_adjustSwitchNumber((row*KEYPAD_NUM_COLS)+col+1);
+#elif(KEYPAD_NUM_COLS == 4)
+					return Keypad_4x4_adjustSwitchNumber((row*KEYPAD_NUM_COLS)+col+1);
+#endif
+				}   /* End if */
+
+			}   /* End for(row=0;row<NUM_ROW; row++)*/
+
+		}   /* End for(col=0;col<NUM_COL;col++) */
+
+		/*--------------------------------------------------------*/
+
+		/* Returning the pins as it was before choosing another col */
+
+		/* Set pin back as INPUT pin */
+		GPIO_setupPinDirection(KEYPAD_COL_PORT_ID, KEYPAD_FIRST_COL_PIN_ID+col, PIN_INPUT);
+
+		/* Activate the pull up internal resistance */
+		GPIO_writePin(KEYPAD_COL_PORT_ID, KEYPAD_FIRST_COL_PIN_ID+col, LOGIC_HIGH);
+		/*--------------------------------------------------------*/
+
+	}   /* End while() */
+
+}   /* End Keypad_getPressedKey() function */
+
+/* Private functions definitions: */
+
+#if(KEYPAD_NUM_COLS == 3)
+/*
+ * A function to make the keypad fit it's 4x3
+ * design in proteus
+ */
+static uint8 Keypad_4x3_adjustSwitchNumber(uint8 buttonNumber)
+{
+
+	switch(buttonNumber)
+	{
+	case 10:
+		return'*';
+		break;
+	case 11:
+		return 0;
+		break;
+	case 12:
+		return'#';
+		break;
+	default:
+		return buttonNumber;
+	}   /*End switch */
+
+}   /* End Keypad_4x3_adjustSwitchNumber() function */
+#elif(KEYPAD_NUM_COLS == 4)
+/*
+ * A function to make the keypad fit it's 4x4
+ * design in proteus
+ */
+static uint8 Keypad_4x4_adjustSwitchNumber(uint8 buttonNumber)
+{
+
+	switch(buttonNumber)
+	{
+	case 1:
+		return 7;
+		break;
+	case 2:
+		return 8;
+		break;
+	case 3:
+		return 9;
+		break;
+	case 4:
+		return'/';
+		break;
+	case 5:
+		return 4;
+		break;
+	case 6:
+		return 5;
+		break;
+	case 7:
+		return 6;
+		break;
+	case 8:
+		return'*';
+		break;
+	case 9:
+		return 1;
+		break;
+	case 10:
+		return 2;
+		break;
+	case 11:
+		return 3;
+		break;
+	case 12:
+		return'-';
+		break;
+	case 13:
+		return 13;
+		break;
+	case 14:
+		return 0;
+		break;
+	case 15:
+		return'=';
+		break;
+	case 16:
+		return '+';
+		break;
+	}   /* End switch */
+
+}   /* End Keypad_4x4_adjustSwitchNumber() function */
+
+/**---------------------------------END-----------------------------**/
+
+#endif
+

@@ -1,0 +1,439 @@
+/******************************************************************************
+ *
+ * Module: Common - Platform Types Abstraction
+ *
+ * File Name: Control_ECU.c
+ *
+ * Description: types for AVR
+ *
+ * Date Created: 28/10/2022
+ *
+ * Author: Moustafa Ahmed
+ *
+ *******************************************************************************/
+
+/**-------------------------INCLUDES Section------------------------**/
+#include "Libraries.h"
+#include "GPIO.h"
+#include "buzzer.h"
+#include "DcMotor.h"
+#include "TIMER.h"
+#include "uart.h"
+#include "twi.h"
+#include "external_eeprom.h"
+
+
+/**-------------------------Macros----------------------------------**/
+#define CONTROL_READY 0x10
+/**-------------------------Global Variables Section----------------**/
+uint8 g_wrongPasswordCounter = 0;
+uint8 g_TimerCounter=0;
+
+/* Timer1 config is discussed at Drivers Init function */
+Timer1_ConfigType TIMER1_Config = {Normal_A,Normal_B,Channel_A_ON,Channel_B_OFF,TIMER1_FALLING_EDGE,NOISE_CANCELER_OFF,F_TIMER11024,CTC_OCR1A,ENABLE_INTERRUPT,DISABLE_INTERRUPT,DISABLE_INTERRUPT,0,23437,0};
+
+/**-------------------------Enum Section----------------------------**/
+typedef enum
+{
+	NEW_PASS,OPTION_STAGE,CONFIRMATION_STAGE,SHUTDOWN_SYSTEM,IN_DOOR
+}System_Stage;
+/**-------------------------Struct Section--------------------------**/
+
+/*
+ * Description:
+ * Used to save the passwords inside it
+ * MainPassword will be the Password which gonna be used everytime
+ * ConfirmingPassword will be only used when setting up a new password
+ */
+typedef struct
+{
+	uint8 MainPassword[6];
+	uint8 ConfirmingPassword[6];
+}System_Info;
+
+/* Creating Global Member from the structure */
+System_Stage g_SystemStep = NEW_PASS;
+/**-------------------------Function Dec. Section-------------------**/
+
+/*
+ * Description:
+ * Used to check on the two passwords received by UART
+ * Return: True; which means the 2 passwords are matched, Flase; otherwise
+ */
+uint8 NewPasswordChecker(System_Info *a_EnteredPasswords);
+/*-------------------------------------------------------------------*/
+
+/*
+ * Description:
+ * Used to Confirm a single password received through UART with the saved one
+ * inside EEPROM
+ */
+uint8 ConfirmPass(System_Info *a_PassCheck);
+/*-------------------------------------------------------------------*/
+
+/*
+ * Description:
+ * Receives from HMI_ECU a byte at first and after executing each stage
+ * to identify which stage should the Control execute right now
+ * This byte is just a Symbol as 'S' from Shutdown_System , etc
+ */
+void OptionControl(void);
+/*-------------------------------------------------------------------*/
+
+/*
+ * Description:
+ * This will be the function which will be called back by the Timer
+ */
+void App_timer1(void);
+/*-------------------------------------------------------------------*/
+
+/*
+ * Description:
+ * Used to Control the time delay which depends on Timer1 ISR
+ */
+void App_timerDelay(uint8 delay);
+
+/**-------------------------Function Definition Section-------------**/
+/*
+ * Description:
+ * Initializing All drivers
+ */
+void Drivers_Init()
+{
+
+	/* Initializing UART */
+	/*
+	 * UART_trSpeed : Double Speed
+	 * UART_RECEIVE_INT : No
+	 * UART_TRANSMIT_INT : No
+	 * UART_EMPTY_INT : No
+	 * UART_RECEIVER : Yes
+	 * UART_TRANSMITTER : Yes
+	 * UART_CharSize : 8-bit
+	 * UART_REG_SELECT : UBRRH
+	 * UART_MODE_SELECT : A-sync
+	 * UART_PARITY_SELECT : No
+	 * UART_STOP_BIT_SELECT : 1-bit
+	 * UART_CLOCK_POLARITY : A-sync Rising
+	 * baud_rate : 9600
+	 *
+	 */
+	UART_ConfigType UART_Config = {DOUBLE_TR_SPEED,RECEIVE_INT_EN_OFF,TRANSMIT_INT_EN_OFF,EMPTY_INT_EN_OFF,RECEIVER_EN_ON,TRANSMITTER_EN_ON,EIGHT_BIT,UBRRH_REG,ASYNCHRONOUS,PARITY_DISABLE,ONE_BIT,A_Sync_RISING_EDGE,9600};
+	UART_init(&UART_Config);
+
+	/* Initializing Dc Motor */
+	DCMotor_init();
+
+	/* Initializing Timer0 PWM function for DcMotor Usage */
+	/*
+	 * file name: TIMER.h
+	 *  -> Structure Configuration:
+	 *
+	 *  Timer0_PreScaler : F_CPU/64
+	 *  Timer0_ForceCompare :--
+	 *  Timer0_WaveForm :--
+	 *  Timer0_CompareMode :--
+	 *  Timer0_COMP_INT :--
+	 *  Timer0_OVF_INT :--
+	 *  Timer0_TCNT0_Value :--
+	 *  Timer0_OCR0_Value :--
+	 */
+
+	Timer0_ConfigType PWM_Config;
+	PWM_Config.Timer0_PreScaler = F0_TIMER64;
+	Timer0_PWM_Init(&PWM_Config);
+
+	/* Initializing Timer 1 */
+		/*
+		 * file name: TIMER.h
+		 *  -> Structure Configuration:
+		 *
+		 *  CompareModeA : Normal
+		 *  CompareModeB : Normal
+		 *  ForceCompareA : Activated
+		 *  ForceCompareB : Disabled
+		 *  EdgeControl : ---
+		 *  NoiseControl : Disabled
+		 *  F_TIMER1_CLOCK : F_CPU/1024
+		 *  WaveForm : CTC mode ,TOP: OCR1A
+		 *  interruptA : Enabled
+		 *  interruptB : Disabled
+		 *  interruptOvf : Disabled
+		 *  TCNT1_Value : 0
+		 *  OCR1A_Value : 23437
+		 *  OCR1B_Value : ---
+		 */
+
+		/* Setting the callback function*/
+		Timer1_setCallBackONE(App_timer1);
+
+	/* Initializing the Buzzer */
+	Buzzer_init();
+
+	/* Initializing TWI */
+	/*
+	 * file name: twi.h
+	 *  -> Structure Configuration:
+	 *
+	 *  interruptControl : No
+	 *  ackControl : Activate
+	 *  twiControl : Activate
+	 *  prescalerControl : No Prescaling
+	 *  callRecControl :No
+	 *  address : Address 1
+	 *  bit_rate : 400 kbps
+	 */
+	TWI_ConfigType TWI_Config = {TWI_INT_DISABLED,ACK_OFF,TWI_ENABLED,F_I2C_1,CALL_RECOGNITION_OFF,1,2};
+
+	/* Activating Interrupt system*/
+	SREG |= (1<<7);
+
+}
+/*-------------------------------------------------------------------*/
+
+int main(void)
+{
+	/**-----------------------Local Variables----------------------**/
+	System_Info SystemInfo;
+	uint8 a_PassCheckResult = 0;
+	uint8 a_CharCounter=0;
+	/**-----------------------Main Section-------------------------**/
+
+	/* Initializing Everything */
+	Drivers_Init();
+
+	while(1)
+	{
+		/*
+		 * Description:
+		 *  This Function will sync with HMI_ECU to know which stage are we
+		 */
+
+		OptionControl();
+
+		if(g_SystemStep == NEW_PASS) /* First stage adding the password */
+		{
+
+			/* Receiving the 2 passwords from HMI_ECU */
+			/* Sync between two MCU */
+			UART_sendByte(CONTROL_READY);
+			/* Starting to receive the data */
+			UART_receiveString(SystemInfo.MainPassword);
+			/* Sync between two MCU */
+			UART_sendByte(CONTROL_READY);
+			/* Starting to receive the data */
+			UART_receiveString(SystemInfo.ConfirmingPassword);
+
+			/* Checking on the two passwords */
+			a_PassCheckResult = NewPasswordChecker(&SystemInfo);
+
+			/* Return back the result to HMI_ECU to move to the next step */
+			while(UART_receiveByte() != CONTROL_READY){}
+			UART_sendByte(a_PassCheckResult);
+
+
+			/* If password was correct then save it */
+			if(a_PassCheckResult == 'T')
+			{
+				/* Then the two passwords are correct and then save the data */
+				a_CharCounter = 0;
+				while(a_CharCounter < 5)
+				{
+					EEPROM_writeByte(0x0310 + a_CharCounter,SystemInfo.MainPassword[a_CharCounter] );
+					_delay_ms(10);
+
+					a_CharCounter++;
+				} /* Password saved */
+
+			}
+
+		}
+		else if(g_SystemStep == CONFIRMATION_STAGE) /* Password check with EEPROM */
+		{
+			/* Attemping to receive the password */
+			UART_sendByte(CONTROL_READY);
+			UART_receiveString(SystemInfo.MainPassword);
+
+			/* Check on it */
+			a_PassCheckResult = ConfirmPass(&SystemInfo);
+
+			/* Return back the result */
+			while(UART_receiveByte() != CONTROL_READY){}
+			UART_sendByte(a_PassCheckResult);
+		}
+		else if(g_SystemStep == IN_DOOR)
+		{
+			/* Open the door*/
+			DcMotor_Rotate(ClockWise, 100);
+
+			/* Delay 15 seconds using Timer1 */
+			App_timerDelay(15);
+
+			/* HOLD for 3 seconds */
+			DcMotor_Rotate(ClockWise, 0);
+
+			/* Delay 3 seconds using Timer1 */
+			App_timerDelay(3);
+
+			/* Close the door*/
+			DcMotor_Rotate(Anti_ClockWise, 100);
+
+			/* Delay 15 seconds using Timer1 */
+			App_timerDelay(15);
+
+			/* Stop the motor */
+			DcMotor_Rotate(Anti_ClockWise, 0);
+		}
+		else if(g_SystemStep == SHUTDOWN_SYSTEM)
+		{
+			/* Activate buzzer for 1 minute and take no input */
+			Buzzer_on();
+
+			/* Delay for 60 seconds using timer1 */
+			App_timerDelay(60);
+
+			/* Turn off the buzzer again */
+			Buzzer_off();
+		}
+	}
+}
+/*-------------------------------------------------------------------*/
+
+/*
+ * Description:
+ * Used to check on the two passwords received by UART
+ * Return: True; which means the 2 passwords are matched, Flase; otherwise
+ */
+uint8 NewPasswordChecker(System_Info *a_EnteredPasswords)
+{
+	/**-----------------------Local Variables----------------------**/
+	uint8 CharCounter = 0;
+
+	while(a_EnteredPasswords->MainPassword[CharCounter] != '\0' || a_EnteredPasswords->ConfirmingPassword[CharCounter] != '\0') /* Getting check */
+	{
+		if(a_EnteredPasswords->MainPassword[CharCounter] == a_EnteredPasswords->ConfirmingPassword[CharCounter])
+		{
+			CharCounter++;
+		}
+		else
+		{
+			/* Return a false reference as the two passwords doesn't match */
+			return 'F';
+		}
+	}
+
+	/* Return a true reference that the two passwords are matched */
+	return 'T';
+
+}
+/*-------------------------------------------------------------------*/
+
+/*
+ * Description:
+ * This will be the function which will be called back by the Timer
+ */
+void App_timer1()
+{
+	g_TimerCounter++;   /* increment the global counter flag with every interrupt */
+}   /* End App_timer1()function */
+
+/*-------------------------------------------------------------------*/
+
+/*
+ * Description:
+ * Used to Control the time delay which depends on Timer1 ISR
+ */
+void App_timerDelay(uint8 delay)
+{
+	if(3 == delay)
+	{
+
+		Timer1_Init(&TIMER1_Config);   /* initialize the timer module with the desired configuration */
+		while(g_TimerCounter != 1);         /* wait until the global counter became 2 to make 2 seconds delay */
+		g_TimerCounter = 0;                 /* Reset the global counter */
+		Timer1_deInit();	/* Stop the timer */
+	}   /* End if(2==delay) */
+	else if(15 == delay)
+	{
+
+		Timer1_Init(&TIMER1_Config);
+		while(g_TimerCounter != 5);   /* wait until the global counter became 15 to make 15 seconds delay */
+		g_TimerCounter = 0;
+		Timer1_deInit();
+	}   /* End else if(15==delay) */
+	else if(60 == delay)
+	{
+		Timer1_Init(&TIMER1_Config);
+		while(g_TimerCounter != 20);   /* wait until the global counter became 20 to make 1 minute delay */
+		g_TimerCounter = 0;
+		Timer1_deInit();
+	}   /* End else if(60==delay) */
+}
+/*-------------------------------------------------------------------*/
+
+/*
+ * Description:
+ * Used to Confirm a single password received through UART with the saved one
+ * inside EEPROM
+ */
+uint8 ConfirmPass(System_Info *a_PassCheck) /* Confirming the entered password with EEPROM */
+{
+	uint8 a_CharCounter = 0;
+	uint8 value;
+
+	while(a_CharCounter < 5) /* Checking on the 5 numbers */
+	{
+		EEPROM_readByte(0x0310 + a_CharCounter, &value);/* Reading byte by byte from EEPROM ( SAVED PASS ) */
+		_delay_ms(10);
+
+		if(value == a_PassCheck->MainPassword[a_CharCounter])
+		{
+			a_CharCounter++;
+		}
+		else
+		{
+			return 'F'; /* Incorrect Password */
+		}
+	}
+	return 'T'; /* Correct Password */
+}
+
+/*-------------------------------------------------------------------*/
+
+/*
+ * Description:
+ * Receives from HMI_ECU a byte at first and after executing each stage
+ * to identify which stage should the Control execute right now
+ * This byte is just a Symbol as 'S' from Shutdown_System , etc
+ */
+void OptionControl() /* To sync with control_ecu which stage it should be */
+{
+	uint8 LiveStage;
+
+	UART_sendByte(CONTROL_READY);
+	LiveStage = UART_receiveByte(); /* Receiving only a byte which indicates which state we are */
+
+
+
+	switch(LiveStage)
+	{
+	case('N'):
+							g_SystemStep = NEW_PASS;
+	break;
+
+	case('C'):
+							g_SystemStep = CONFIRMATION_STAGE;
+	break;
+
+	case('S'):
+							g_SystemStep = SHUTDOWN_SYSTEM;
+	break;
+
+	case('I'):
+					g_SystemStep = IN_DOOR;
+	break;
+
+	}
+
+}
+/**---------------------------------END-----------------------------**/

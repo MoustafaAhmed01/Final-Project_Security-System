@@ -1,0 +1,39 @@
+/******************************************************************************
+ *
+ * Module: Common - Platform Types Abstraction
+ *
+ * File Name: keypad.h
+ *
+ * Description: types for AVR
+ *
+ * Date Created: 15/10/2022
+ *
+ * Author: Moustafa Ahmed
+ *
+ *******************************************************************************/
+
+#ifndef KEYPAD_H_
+#define KEYPAD_H_
+
+/**-------------------------INCLUDES Section------------------------**/
+#include "std_types.h"
+/**-------------------------Definitions & Config Section------------**/
+
+
+/* Static configurations: */
+#define N_ROW 4
+#define N_COL 4
+
+/* Keypad connections: */
+#define KEYPAD_PORT_DIR DDRB
+#define KEYPAD_PORT PORTB
+#define KEYPAD_PIN PINB
+
+/**-------------------------Function Dec. Section-------------------**/
+
+/* Public functions prototypes: */
+uint8 Keypad_getPressedKey();
+
+/**---------------------------------END-----------------------------**/
+
+#endif /* KEYPAD_H_ */

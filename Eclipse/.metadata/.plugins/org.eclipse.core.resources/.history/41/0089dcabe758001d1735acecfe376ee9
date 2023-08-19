@@ -1,0 +1,362 @@
+/******************************************************************************
+ *
+ * Module: Common - Platform Types Abstraction
+ *
+ * File Name: HMI_ECU.c
+ *
+ * Description: types for AVR
+ *
+ * Date Created: 28/10/2022
+ *
+ * Author: Moustafa Ahmed
+ *
+ *******************************************************************************/
+
+/**-------------------------INCLUDES Section------------------------**/
+#include "Libraries.h"
+#include "std_types.h"
+#include "LCD.h"
+#include "keypad.h"
+#include "GPIO.h"
+#include "TIMER.h"
+#include "uart.h"
+/**-------------------------Global Variables Section----------------**/
+uint8 g_wrongPasswordCounter = 0;
+uint8 g_TimerCounter=0,g_OneTimeEnter=0;
+uint8 g_flag = 'F';
+/* Timer1 config is discussed at Drivers Init function */
+Timer1_ConfigType TIMER1_Config = {Normal_A,Normal_B,Channel_A_ON,Channel_B_OFF,TIMER1_FALLING_EDGE,NOISE_CANCELER_OFF,F2_TIMER1024,CTC_OCR1A,ENABLE_INTERRUPT,DISABLE_INTERRUPT,23400,23437,0};
+/**-------------------------Macros----------------------------------**/
+#define CONTROL_READY 0x10
+/**-------------------------Enum Section----------------------------**/
+typedef enum
+{
+	NEW_PASS,OPTION_STAGE,CONFIRMATION_STAGE,CHANGE_PASS_STEP,SHUTDOWN_SYSTEM,IN_DOOR
+}System_Stage;
+/**-------------------------Struct Section--------------------------**/
+typedef struct
+{
+	uint8 MainPassword[7];
+	uint8 ConfirmingPassword[7];
+}System_Info;
+/**-------------------------Function Dec. Section-------------------**/
+void NewPassword(System_Info *a_PasswordConfirmation);
+void GetPassword(uint8 *a_Password);
+void OpenDoor(void);
+/**-------------------------Function Definition Section-------------**/
+/*
+ * Description:
+ * Initializing All drivers
+ */
+void Drivers_Init()
+{
+
+	/* Initializing UART */
+	/*
+	 * UART_trSpeed : Double Speed
+	 * UART_RECEIVE_INT : No
+	 * UART_TRANSMIT_INT : No
+	 * UART_EMPTY_INT : No
+	 * UART_RECEIVER : Yes
+	 * UART_TRANSMITTER : Yes
+	 * UART_CharSize : 8-bit
+	 * UART_REG_SELECT : UBRRH
+	 * UART_MODE_SELECT : A-sync
+	 * UART_PARITY_SELECT : No
+	 * UART_STOP_BIT_SELECT : 1-bit
+	 * UART_CLOCK_POLARITY : A-sync Rising
+	 * baud_rate : 9600
+	 *
+	 */
+	UART_ConfigType UART_Config = {DOUBLE_TR_SPEED,RECEIVE_INT_EN_OFF,TRANSMIT_INT_EN_OFF,EMPTY_INT_EN_OFF,RECEIVER_EN_ON,TRANSMITTER_EN_ON,EIGHT_BIT,UBRRH_REG,ASYNCHRONOUS,PARITY_DISABLE,ONE_BIT,A_Sync_RISING_EDGE,9600};
+	UART_init(&UART_Config);
+
+	/* Initializing Timer 1 */
+	/*
+	 * file name: TIMER.h
+	 *  -> Structure Configuration:
+	 *
+	 *  CompareModeA : Normal
+	 *  CompareModeB : Normal
+	 *  ForceCompareA : Activated
+	 *  ForceCompareB : Disabled
+	 *  EdgeControl : ---
+	 *  NoiseControl : Disabled
+	 *  F_TIMER1_CLOCK : F_CPU/1024
+	 *  WaveForm : CTC mode ,TOP: OCR1A
+	 *  interruptA : Enabled
+	 *  interruptB : Disabled
+	 *  interruptOvf : Disabled
+	 *  TCNT1_Value : 0
+	 *  OCR1A_Value : 23437
+	 *  OCR1B_Value : ---
+	 */
+
+	/* Setting the callback function*/
+	Timer1_setCallBackONE(OpenDoor);
+
+	/* Initializing LCD */
+	LCD_init();
+
+	/* Activating Interrupt system */
+	SREG = (1<<7);
+}
+/*-------------------------------------------------------------------*/
+
+int main(void)
+{
+	/**-----------------------Local Variables----------------------**/
+	System_Stage l_SystemStage = NEW_PASS;
+	System_Info SystemInfo;
+	uint8 Keypad_Key;
+	uint8 a_PassCheckResult;
+
+	/**-----------------------Main Section-------------------------**/
+
+	/* Initializing Everything */
+	Drivers_Init();
+
+	while(1)
+	{
+
+		if(l_SystemStage == NEW_PASS)/* First Use */
+		{
+
+			/* Setting up a new password */
+			NewPassword(&SystemInfo);
+
+			/**----------------------------------------------------**/
+			/* Sending the values to Control_ECU to make sure that they are correct */
+
+			while(UART_receiveByte() != CONTROL_READY){}
+			UART_sendByte('N'); /* Identifying the stage at first */
+
+			/* Sending the first password */
+			while(UART_receiveByte() != CONTROL_READY){}
+			UART_sendString(SystemInfo.MainPassword);
+
+			/* Sending the second password */
+			while(UART_receiveByte() != CONTROL_READY){}
+			UART_sendString(SystemInfo.ConfirmingPassword);
+			/**----------------------------------------------------**/
+
+			/* Getting the INFO if two passwords was correct or not */
+			UART_sendByte(CONTROL_READY);
+			a_PassCheckResult = UART_receiveByte();
+
+			if(a_PassCheckResult == 'F')
+			{
+				/* Then you will just repeat it again */
+				l_SystemStage = NEW_PASS;
+			}
+			else if(a_PassCheckResult == 'T')
+			{
+				l_SystemStage = OPTION_STAGE;
+			}
+			else
+			{
+				/* Do nothing */
+			}
+
+		}
+		else if(l_SystemStage == OPTION_STAGE)
+		{
+			LCD_clearScreen();
+			LCD_moveCursor(0, 0);
+			LCD_displayString("+ : Open Door ");
+			LCD_moveCursor(1, 0);
+			LCD_displayString("- : Change Pass ");
+
+			/* Let's see what the user will choose */
+			Keypad_Key = Keypad_getPressedKey();
+
+			if(Keypad_Key == '+')
+			{
+				l_SystemStage = IN_DOOR;
+			}
+			else if(Keypad_Key == '-')
+			{
+				l_SystemStage = CHANGE_PASS_STEP;
+			}
+			else /* Wrong input */
+			{
+				l_SystemStage = OPTION_STAGE;
+			}
+			_delay_ms(300); /* Delay after using the keypad */
+
+		}
+		else if(l_SystemStage == IN_DOOR)
+		{
+			a_PassCheckResult = 0;
+
+			if(g_OneTimeEnter == 0)
+			{
+				/* Requesting from the user to enter the password */
+				LCD_clearScreen();
+				LCD_moveCursor(0, 0);
+				LCD_displayString("Enter the Pass :");
+				LCD_moveCursor(1, 0);
+
+				/* Ask for the password */
+				GetPassword(SystemInfo.MainPassword);/* Saving the password */
+
+				/* Confirming it by sending it to CONTROL_ECU */
+				/* Sync the stage first */
+				while(UART_receiveByte() != CONTROL_READY);
+				UART_sendByte('C');
+
+				/* Send the password */
+				while(UART_receiveByte() != CONTROL_READY);
+				UART_sendString(SystemInfo.MainPassword);
+
+				/* Receiving feedback if password was correct or not */
+				UART_sendByte(CONTROL_READY);
+				a_PassCheckResult = UART_receiveByte();
+
+			}
+
+			if(a_PassCheckResult == 'F')
+			{
+
+			}
+			else if(a_PassCheckResult == 'T')
+			{
+				/* Open the door */
+
+				if(g_OneTimeEnter == 0)
+				{
+					/* Sending request to CONTROL_ECU to turn motor ON */
+					while(UART_receiveByte() != CONTROL_READY);
+					UART_sendByte('I');
+
+					Timer1_Init(&TIMER1_Config);
+					g_OneTimeEnter = 1;
+				}
+				if(g_flag == 'T')
+				{
+					/* Stop timer1 one after completing the door operation */
+					Timer1_deInit();
+					g_OneTimeEnter = 0;
+					g_flag = 'F';
+
+					/* Then move to the next step  */
+					l_SystemStage = OPTION_STAGE;
+				}
+			}
+			else
+			{
+				/* Stay in the same stage */
+				l_SystemStage = IN_DOOR;
+			}
+
+
+		}
+		else if(l_SystemStage == CHANGE_PASS_STEP)
+		{
+
+		}
+	}
+}
+/*-------------------------------------------------------------------*/
+void NewPassword(System_Info *a_PasswordConfirmation) /* Getting a new password which has two-verification method */
+{
+
+	/* Displaying the first messages on the screen */
+	LCD_clearScreen();
+	LCD_moveCursor(0, 0);
+	LCD_displayString("Enter the Pass:");
+	LCD_moveCursor(1, 0);
+
+	/* Getting the first password */
+	GetPassword(a_PasswordConfirmation->MainPassword);
+
+	/* Clearing the screen and then requesting to enter the password again */
+	LCD_clearScreen();
+	LCD_moveCursor(0, 0);
+	LCD_displayString("Re-Enter pass:");
+	LCD_moveCursor(1, 0);
+
+
+	/* Getting the password again */
+	GetPassword(a_PasswordConfirmation->ConfirmingPassword);
+
+
+
+}
+/*-------------------------------------------------------------------*/
+/* Starts opening the door */
+void OpenDoor()
+{
+	if(g_TimerCounter < 5 )
+	{
+		LCD_clearScreen();
+		LCD_displayString("Unlocking the");
+		LCD_moveCursor(1, 0);
+		LCD_displayString("    Door...");
+		g_TimerCounter++;
+	}
+	else if(g_TimerCounter == 5)
+	{
+		LCD_clearScreen();
+		LCD_displayString(" Door is OPEN!");
+		g_TimerCounter++;
+	}
+	else if(g_TimerCounter > 5 && g_TimerCounter < 11)
+	{
+		LCD_clearScreen();
+		LCD_displayString("locking the");
+		LCD_moveCursor(1, 0);
+		LCD_displayString("    Door...");
+		g_TimerCounter++;
+	}
+	else if(g_TimerCounter >= 11)
+	{
+		g_flag = 'T';
+	}
+}
+/*-------------------------------------------------------------------*/
+void GetPassword(uint8 *a_Password) /* Get the password from the user */
+{
+	/**-----------------------Local Variables----------------------**/
+	uint8 CharCounter = 0;
+	while(1)
+	{
+		/* Getting the value from keypad */
+		a_Password[CharCounter] = Keypad_getPressedKey();
+
+		if(CharCounter > 4)
+		{
+			/* If entered means the user has entered 5 numbers */
+			if(a_Password[CharCounter] == '=')
+			{
+				a_Password[6] = '\0';
+				break;
+			}
+			else
+			{
+				/* Do nothing */
+			}
+
+		}
+
+		if(a_Password[CharCounter] >= 0 && a_Password[CharCounter] <= 9)
+		{
+			if(CharCounter > 4)
+			{
+				/* Do nothing till the enters = */
+			}
+			else
+			{
+				LCD_intgerToString(a_Password[CharCounter]);
+
+				//LCD_displayCharacter('*');
+				CharCounter++;
+			}
+
+		}
+
+		_delay_ms(500); /* Evading from repeated inputs */
+	}
+}
+
+/**---------------------------------END-----------------------------**/
